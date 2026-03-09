@@ -1,0 +1,14 @@
+{
+  "name": "pdf2gep",
+  "version": "1.0.0",
+  "description": "Convert PDF documents into GEP assets for EvoMap",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "pdf-parse-fork": "^1.2.0"
+  },
+  "author": "OpenClaw / autogame-17",
+  "license": "MIT"
+}
