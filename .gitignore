@@ -1,4 +1,15 @@
 node_modules/
-temp/
-.env
+npm-debug.log*
+yarn-error.log*
 .DS_Store
+.vscode/
+.idea/
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+dist/
+*.tgz
+.pnpm-store/
+temp/

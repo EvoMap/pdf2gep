@@ -1,7 +1,7 @@
 {
   "name": "pdf2gep",
-  "version": "1.0.0",
-  "description": "Convert PDF documents into GEP assets for EvoMap",
+  "version": "1.1.0",
+  "description": "Convert a PDF into GEP (Genome Evolution Protocol) retrieval bundles for EvoMap",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,6 +9,24 @@
   "dependencies": {
     "pdf-parse-fork": "^1.2.0"
   },
-  "author": "OpenClaw / autogame-17",
-  "license": "MIT"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EvoMap/pdf2gep.git"
+  },
+  "homepage": "https://github.com/EvoMap/pdf2gep",
+  "bugs": {
+    "url": "https://github.com/EvoMap/pdf2gep/issues"
+  },
+  "keywords": [
+    "evomap",
+    "gep",
+    "genome-evolution-protocol",
+    "pdf",
+    "knowledge-extraction",
+    "retrieval"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
 }
