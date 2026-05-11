@@ -19,27 +19,59 @@ Downstream consumers (EvoMap hub, local agents) should filter on `source_type` a
 
 ## Install
 
+### Recommended: from npm
+
+```bash
+npm install -g @evomap/pdf2gep
+```
+
+This installs the `pdf2gep` CLI globally. Requires Node.js 18+ (for built-in `fetch`).
+
+For one-off use, `npx` works without a global install:
+
+```bash
+npx @evomap/pdf2gep "https://arxiv.org/pdf/2604.15097.pdf"
+```
+
+### Alternative: from source
+
 ```bash
 git clone https://github.com/EvoMap/pdf2gep.git
 cd pdf2gep
 npm install
 ```
 
-Requires Node.js 18+ (for built-in `fetch`).
-
 ## Usage
+
+After `npm install -g @evomap/pdf2gep`:
 
 ```bash
 # From a URL (arXiv, etc.)
-node index.js "https://arxiv.org/pdf/2604.15097.pdf"
+pdf2gep "https://arxiv.org/pdf/2604.15097.pdf"
 
 # From a local file
-node index.js "./manual.pdf"
+pdf2gep "./manual.pdf"
 ```
 
-Bundles are written to `temp/evomap_assets/batch_<timestamp>.json`.
+When working from a source checkout, the equivalent is `node index.js "<url-or-path>"`.
 
-Each entry in the batch is `{ gene, capsule }`.
+Bundles are written to `temp/evomap_assets/batch_<timestamp>.json` under the current working directory. Each entry in the batch is `{ gene, capsule }`.
+
+### Library API
+
+`pdf2gep` also exposes its building blocks for programmatic use:
+
+```js
+const {
+  chunkText,
+  createGene,
+  createKnowledgeCapsule,
+  processChunk,
+  SCHEMA_VERSION,
+} = require('@evomap/pdf2gep');
+```
+
+This is useful when embedding the adapter inside a custom ingestion pipeline. The exported helpers are documented inline in `index.js`.
 
 ## Output schema (GEP 1.6.0)
 
@@ -128,4 +160,4 @@ See also:
 
 ## License
 
-MIT.
+MIT. See [LICENSE](./LICENSE).

@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   chunkText,
@@ -12,6 +14,8 @@ const {
   GENE_ID_PREFIX,
   CAPSULE_ID_PREFIX,
 } = require('../index');
+
+const pkg = require('../package.json');
 
 test('chunkText splits text by chunk size', () => {
   const out = chunkText('abcdefghij', 4);
@@ -72,4 +76,18 @@ test('outcome.status is never "success" for pdf_knowledge capsules', async () =>
   const { capsule } = await processChunk('x', 0, sourceDesc);
   assert.notEqual(capsule.outcome.status, 'success');
   assert.notEqual(capsule.outcome.status, 'failed');
+});
+
+test('package.json declares the @evomap scope and v1.2.0 bin entry', () => {
+  assert.equal(pkg.name, '@evomap/pdf2gep');
+  assert.ok(typeof pkg.version === 'string' && pkg.version.length > 0);
+  assert.ok(pkg.bin && pkg.bin.pdf2gep, 'bin.pdf2gep must be defined');
+  const binTarget = path.resolve(__dirname, '..', pkg.bin.pdf2gep);
+  assert.ok(fs.existsSync(binTarget), 'bin target file must exist on disk: ' + binTarget);
+});
+
+test('CLI entry has a node shebang so global install can launch it', () => {
+  const binPath = path.resolve(__dirname, '..', pkg.bin.pdf2gep);
+  const firstLine = fs.readFileSync(binPath, 'utf8').split('\n', 1)[0];
+  assert.equal(firstLine, '#!/usr/bin/env node');
 });

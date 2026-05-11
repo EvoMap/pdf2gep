@@ -1,10 +1,21 @@
 {
-  "name": "pdf2gep",
-  "version": "1.1.0",
+  "name": "@evomap/pdf2gep",
+  "version": "1.2.0",
   "description": "Convert a PDF into GEP (Genome Evolution Protocol) retrieval bundles for EvoMap",
   "main": "index.js",
+  "bin": {
+    "pdf2gep": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "SKILL.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test test/*.test.js",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "pdf-parse-fork": "^1.2.0"
@@ -28,5 +39,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
