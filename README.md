@@ -4,18 +4,20 @@ Convert a PDF document into **GEP (Genome Evolution Protocol)** assets suitable 
 
 `pdf2gep` fetches a PDF (local path or URL), splits the text into chunks, and writes one GEP bundle per chunk:
 
-- A **Gene** of category `knowledge_reference` -- a compact retrieval pointer.
-- A **KnowledgeCapsule** with `source_type = "pdf_knowledge"` -- the chunk text itself, carried as reference material.
+- An **explore Gene** -- a compact retrieval pointer (`category: "explore"`).
+- A **reference Capsule** (`source_type: "reference"`) -- the chunk text itself, carried as reference material.
+
+Both assets are **fully schema-valid GEP** (validated against [`@evomap/gep-sdk`](https://github.com/EvoMap/gep-sdk-js)) and carry a real, Hub-recomputable `asset_id`. Earlier versions used sentinel values (`category: "knowledge_reference"`, `outcome.status: "knowledge_reference"`, a `_source` side-channel) that did not validate against the strict protocol schema — see the v2 note below.
 
 ## Honest scope note (please read before using)
 
 `pdf2gep` is a *retrieval-oriented* protocol adapter. It does **not** produce the kind of Capsule that proves a Gene works.
 
-- A standard GEP **Capsule** is an auditable record of one *real execution* of a Gene (`execution_trace` with exit codes, non-zero `blast_radius`, etc.). PDFs contain knowledge, not executions, so `pdf2gep` deliberately emits a different variant: `source_type = "pdf_knowledge"`, `outcome.status = "knowledge_reference"`, and an empty `execution_trace`. Treating these as proof-of-validation is a misuse.
+- A standard GEP **Capsule** is an auditable record of one *real execution* of a Gene (`execution_trace` with exit codes, non-zero `blast_radius`, etc.). PDFs contain knowledge, not executions, so `pdf2gep` marks its capsules with the protocol's own reference marker: `source_type = "reference"`, an **empty `execution_trace`**, and a **zero `blast_radius`**. `outcome.status = "success"` here means only "the reference chunk was extracted", not that any task passed. Treating these as proof-of-validation is a misuse.
 - The paper that motivates GEP -- *Wang, Ren, Zhang, "From Procedural Skills to Strategy Genes: Towards Experience-Driven Test-Time Evolution"* ([arXiv:2604.15097](https://arxiv.org/abs/2604.15097)) -- validates **Gene-as-control-interface** on 45 scientific code-solving tasks with Gemini 3.1 Pro and Flash Lite. That result does not carry over automatically to retrieval-style knowledge Genes. The Gene emitted by this tool is explicitly a retrieval pointer, not a control interface.
 - Chunk quality is naive: fixed-width ~4000-char slices. This is fine for retrieval-by-topic, but it is not a structured extraction. Do not expect the output to replace a proper RAG ingestion pipeline.
 
-Downstream consumers (EvoMap hub, local agents) should filter on `source_type` and treat `pdf_knowledge` Capsules as reference material only.
+Downstream consumers (EvoMap hub, local agents) should filter on `source_type === "reference"` and treat these Capsules as reference material only.
 
 ## Install
 
@@ -65,79 +67,78 @@ Bundles are written to `temp/evomap_assets/batch_<timestamp>.json` under the cur
 const {
   chunkText,
   createGene,
-  createKnowledgeCapsule,
-  processChunk,
-  SCHEMA_VERSION,
+  createReferenceCapsule, // alias: createKnowledgeCapsule (kept for back-compat)
+  processChunk,           // async — computes the asset_id via @evomap/gep-sdk
 } = require('@evomap/pdf2gep');
 ```
 
-This is useful when embedding the adapter inside a custom ingestion pipeline. The exported helpers are documented inline in `index.js`.
+`createGene` / `createReferenceCapsule` are pure, synchronous builders (they take a `schemaVersion` argument and do **not** set `asset_id`). `processChunk` is async: it loads `@evomap/gep-sdk`, stamps each asset's `schema_version` from the SDK's `SCHEMA_VERSION`, and computes a Hub-valid `asset_id` via `computeAssetId`. The exported helpers are documented inline in `index.js`.
 
-## Output schema (GEP 1.6.0)
+## Output schema
 
-### Gene
+Assets validate against the published `@evomap/gep-sdk` Gene/Capsule schemas; `schema_version` is taken from the SDK at runtime (so it tracks the installed protocol version rather than being hard-coded).
+
+### Gene (`category: "explore"`)
 
 ```json
 {
   "type": "Gene",
+  "schema_version": "<from @evomap/gep-sdk SCHEMA_VERSION>",
   "id": "gene_pdf2gep_<slug>_chunk<N>_<sha8>",
-  "category": "knowledge_reference",
-  "summary": "Retrieval pointer for <slug> chunk #<N>",
+  "category": "explore",
   "signals_match": ["knowledge_lookup", "pdf_reference", "<slug>"],
   "preconditions": ["Agent needs to consult the source document to answer or plan."],
   "strategy": [
-    "Retrieve the backing KnowledgeCapsule (source_type=pdf_knowledge) to read the chunk verbatim.",
-    "Do NOT treat the chunk as a validated procedure. It is reference material only."
+    "Retrieve the backing reference Capsule (source_type=reference) to read the chunk verbatim.",
+    "Treat the chunk as reference material only -- it is NOT a validated procedure."
   ],
-  "constraints": { "max_files": 0, "forbidden_paths": [".git", "node_modules"] },
-  "validation": [],
-  "schema_version": "1.6.0",
-  "_source": {
-    "kind": "pdf2gep",
-    "source_type": "pdf_knowledge",
-    "source_ref": "<url or absolute path>",
-    "source_sha256": "<sha256 of the whole pdf>",
-    "chunk_index": 0,
-    "chunk_sha256": "<sha256 of this chunk>",
-    "claims_outside_scope": "knowledge_extraction",
-    "paper_scope_note": "Gene-as-control-interface was validated by arXiv:2604.15097 on code-science tasks. A knowledge_reference Gene is NOT a control interface; it is a retrieval pointer."
-  }
+  "constraints": { "max_files": 1, "forbidden_paths": [".git", "node_modules"] },
+  "validation": ["node -e \"...sha256(stdin)===argv[1]...\" <chunk_sha256>"],
+  "summary": "Reference pointer for <slug> chunk #<N> (sha256:<sha12>) extracted from <source>.",
+  "asset_id": "sha256:<64 hex>"
 }
 ```
 
-### KnowledgeCapsule
+`validation` is a genuinely runnable reference-integrity check (pipe the chunk in, confirm its sha256 matches) — the knowledge analog of a procedural Gene's validation. It proves the reference is intact, not that a task ran.
+
+### Reference Capsule (`source_type: "reference"`)
 
 ```json
 {
   "type": "Capsule",
+  "schema_version": "<from @evomap/gep-sdk SCHEMA_VERSION>",
   "id": "cap_pdf2gep_<chunk_sha12>_<idkey>",
   "gene": "<gene.id>",
-  "source_type": "pdf_knowledge",
   "trigger": ["knowledge_lookup", "pdf_reference", "<slug>"],
-  "summary": "PDF chunk #<N> from <name>",
-  "confidence": null,
-  "blast_radius": { "files": 0, "lines": 0, "chunk_chars": 4000 },
-  "outcome": { "status": "knowledge_reference", "score": null },
+  "summary": "PDF chunk #<N> from <name> (reference material).",
+  "confidence": 1,
+  "blast_radius": { "files": 0, "lines": 0 },
+  "outcome": { "status": "success", "score": 1 },
+  "success_reason": "Reference chunk extracted verbatim and attested by content hash.",
   "env_fingerprint": { "platform": "...", "node": "..." },
-  "content": "<chunk text verbatim>",
-  "execution_trace": [],
-  "schema_version": "1.6.0",
-  "_source": {
-    "source_ref": "<url or path>",
+  "source_type": "reference",
+  "strategy": ["...copied from the Gene..."],
+  "content": {
+    "text": "<chunk text verbatim>",
+    "mime": "text/plain",
+    "source_ref": "<url or absolute path>",
     "source_sha256": "<sha256 of the whole pdf>",
     "chunk_index": 0,
     "chunk_sha256": "<sha256 of this chunk>",
     "claims_outside_scope": "knowledge_extraction"
-  }
+  },
+  "execution_trace": [],
+  "asset_id": "sha256:<64 hex>"
 }
 ```
 
 Key invariants validators can rely on:
 
-- `outcome.status === "knowledge_reference"` -- never `"success"` / `"failed"`.
-- `execution_trace` is empty.
-- `blast_radius.files === 0 && lines === 0`.
-- `source_type === "pdf_knowledge"` on both the Gene `_source` and the Capsule.
+- `source_type === "reference"` — the canonical marker for extracted/cited knowledge.
+- `execution_trace` is empty and `blast_radius` is `{ files: 0, lines: 0 }` — no Gene was executed.
+- `outcome.status === "success"` means "reference extracted", **not** "task validated"; always read it together with `source_type`.
+- The chunk text and provenance live inside the `content` object (a real object, not a bare string).
+- `asset_id` recomputes correctly under `@evomap/gep-sdk`'s `verifyAssetId`.
 
 ## Publishing to EvoMap
 
@@ -147,7 +148,24 @@ Use `evolver` (the GEP reference runtime) to publish a bundle:
 evolver publish --bundle temp/evomap_assets/batch_<ts>.json
 ```
 
-The EvoMap hub routes `pdf_knowledge` Capsules to the retrieval index, separately from execution Capsules. Installation and consumption is done via the usual `evolver run` / `gep_install_gene` flow; agents that match a `knowledge_lookup` signal will pick the retrieval Gene and fetch the backing Capsule for citation.
+The EvoMap hub routes `source_type: "reference"` Capsules to the retrieval index, separately from execution Capsules. Installation and consumption is done via the usual `evolver run` / `gep_install_gene` flow; agents that match a `knowledge_lookup` signal will pick the retrieval Gene and fetch the backing Capsule for citation.
+
+## v2 migration note
+
+`@evomap/pdf2gep` v2 changes the output format to be **strictly schema-valid GEP**. If you have a consumer built against v1:
+
+| v1 (sentinel, non-conforming) | v2 (schema-valid) |
+|---|---|
+| `gene.category: "knowledge_reference"` | `gene.category: "explore"` |
+| `gene._source.{...}` | provenance moved into `capsule.content.{...}` |
+| `gene.validation: []`, `max_files: 0` | a real integrity check; `max_files: 1` |
+| `capsule.outcome.status: "knowledge_reference"` | `capsule.outcome.status: "success"` + `source_type: "reference"` |
+| `capsule.content: "<string>"` | `capsule.content: { text, ... }` (object) |
+| `capsule.source_type: "pdf_knowledge"` | `capsule.source_type: "reference"` |
+| `capsule.blast_radius.chunk_chars` | dropped (use `content.text.length`) |
+| no `asset_id` | real `asset_id` via `@evomap/gep-sdk` |
+
+Filter on `source_type === "reference"` instead of `"pdf_knowledge"`.
 
 See also:
 - Protocol reference: <https://evomap.ai/wiki/16-gep-protocol>
