@@ -8,41 +8,68 @@ const pdf = require('pdf-parse-fork');
 
 // pdf2gep -- convert a PDF into GEP (Genome Evolution Protocol) assets.
 //
-// IMPORTANT SCOPE NOTE (read before reading the code)
-// ---------------------------------------------------
-// pdf2gep does *not* produce "execution Capsules". A Capsule in GEP is, by
-// default, an auditable record of one real execution of a Gene
-// (execution_trace + non-zero blast_radius + verified exit codes). PDFs do
-// not contain executions; they contain knowledge.
+// SCOPE & HONESTY MODEL (read before reading the code)
+// ----------------------------------------------------
+// A Capsule in GEP is, by default, an auditable record of one real execution
+// of a Gene. PDFs do not contain executions; they contain knowledge. pdf2gep
+// must therefore avoid forging execution evidence while still emitting assets
+// that pass the strict GEP schema (@evomap/gep-sdk, additionalProperties:false).
 //
-// To stay inside the GEP protocol without forging execution evidence, this
-// tool emits:
+// Earlier versions sidestepped the schema with sentinel values
+// (category="knowledge_reference", outcome.status="knowledge_reference",
+// a "_source" side-channel). Those do not validate against the protocol.
 //
-//   Gene: category = "knowledge_reference"
-//     A compact pointer into a body of knowledge (chapter/section/chunk).
-//     `signals_match` tags let an agent retrieve it by topic, and
-//     `_source.claims_outside_scope = "knowledge_extraction"` makes the
-//     retrieval-only nature explicit to downstream consumers.
+// This version emits fully schema-valid assets and encodes "this is reference
+// material, not an execution" using the protocol's OWN honesty primitives:
 //
-//   KnowledgeCapsule: source_type = "pdf_knowledge"
-//     The knowledge payload itself (a PDF chunk). It deliberately does NOT
-//     claim outcome.status = "success", does NOT carry a forged
-//     execution_trace, and is marked so EvoMap hub / local validators can
-//     route it differently from execution Capsules.
+//   Gene:    category = "explore" (the closest real category for retrieving
+//            uncharted reference space). Its `validation` is a genuinely
+//            runnable reference-integrity check — the knowledge analog of a
+//            procedural Gene's validation, proving the chunk is intact rather
+//            than that a task ran.
 //
-// Consumers that expect execution Capsules MUST filter on
-// `source_type === "skill2gep_hook"` or an equivalent execution origin;
-// they MUST NOT treat a pdf_knowledge Capsule as proof that a Gene has
-// been validated in practice.
+//   Capsule: source_type = "reference"   <- the canonical marker for reference
+//            execution_trace = []            material (GEP_SOURCE_TYPES). This
+//            blast_radius = {files:0,lines:0}  is the protocol's own mechanism
+//            content.claims_outside_scope      for "this capsule did not run a
+//                                              Gene"; `reference` exists in the
+//            source_type enum precisely for extracted/cited knowledge.
+//
+// Consumers MUST distinguish reference capsules from execution capsules by
+// `source_type === "reference"` (plus the empty execution_trace and zero
+// blast_radius). They MUST NOT treat a reference Capsule as proof that a Gene
+// was validated on a real task. `outcome.status === "success"` here means only
+// "the reference chunk was successfully extracted", not that a task passed.
+//
+// NOTE: we deliberately stay within the fields the latest evolver emits and
+// the currently-published @evomap/gep-sdk schema declares. The 1.11.0
+// `proof_of_work` field would be an even stronger attestation, but it is not
+// yet published to npm and the reference engine does not emit it, so using it
+// would make pdf2gep output fail validation against the installed SDK.
 
 // Configuration
 const OUTPUT_DIR = path.join(process.cwd(), 'temp', 'evomap_assets');
-if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-
-const SCHEMA_VERSION = '1.6.0';
 const GENE_ID_PREFIX = 'gene_pdf2gep_';
 const CAPSULE_ID_PREFIX = 'cap_pdf2gep_';
 const DEFAULT_CHUNK_SIZE = 4000;
+
+// @evomap/gep-sdk is the single source of truth for SCHEMA_VERSION and the
+// content-addressing algorithm. It ships as ESM; load it once via dynamic
+// import so this CommonJS entrypoint can compute Hub-valid asset_ids that the
+// Hub will accept under its asset_id recomputation gate (spec §5).
+let _sdkPromise = null;
+function loadSdk() {
+  if (!_sdkPromise) {
+    _sdkPromise = import('@evomap/gep-sdk').catch((err) => {
+      _sdkPromise = null;
+      throw new Error(
+        'pdf2gep requires @evomap/gep-sdk for asset_id computation. ' +
+        'Run `npm install` first. Underlying error: ' + (err && err.message ? err.message : err),
+      );
+    });
+  }
+  return _sdkPromise;
+}
 
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
@@ -58,6 +85,17 @@ function slugify(s) {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 40) || 'pdf';
+}
+
+// A genuinely runnable reference-integrity check: pipe the chunk in and
+// confirm its sha256 matches the value the capsule claims. This is the
+// knowledge analog of a procedural Gene's validation — it proves the
+// retrieved reference is intact, NOT that any task was executed.
+//   Usage:  cat chunk.txt | node -e '<cmd>' <chunk_sha256>
+function chunkIntegrityCheck(chunkSha256) {
+  return "node -e \"const{createHash}=require('crypto');const d=require('fs').readFileSync(0);" +
+    "process.exit(createHash('sha256').update(d).digest('hex')===process.argv[1]?0:1)\" " +
+    chunkSha256;
 }
 
 async function fetchPdfBuffer(pdfSource) {
@@ -89,20 +127,21 @@ function chunkText(text, size) {
 }
 
 // ---------------------------------------------------------------------------
-// Gene builder
+// Gene builder (pure, synchronous, no asset_id)
 //
 // We do NOT invent a strategy from PDF chunks -- that would be fabricating
-// control knowledge. Instead the Gene declares itself as a retrieval
-// pointer. Agents that retrieve it get a handle they can use to look up
-// the backing KnowledgeCapsule; they do not get a runnable recipe.
+// control knowledge. The Gene declares itself as a retrieval pointer of
+// category "explore". asset_id is computed separately in processChunk() via
+// the SDK so this builder stays pure and testable without a network install.
 // ---------------------------------------------------------------------------
-function createGene(sourceDesc, chunkIndex, chunkSha256) {
+function createGene(sourceDesc, chunkIndex, chunkSha256, schemaVersion) {
   const slug = slugify(sourceDesc.name || sourceDesc.url || sourceDesc.path || 'pdf');
+  const sourceRef = sourceDesc.url || sourceDesc.path || 'unknown source';
   return {
     type: 'Gene',
+    schema_version: schemaVersion,
     id: GENE_ID_PREFIX + slug + '_chunk' + chunkIndex + '_' + chunkSha256.slice(0, 8),
-    category: 'knowledge_reference',
-    summary: 'Retrieval pointer for ' + slug + ' chunk #' + chunkIndex,
+    category: 'explore',
     signals_match: [
       'knowledge_lookup',
       'pdf_reference',
@@ -112,76 +151,78 @@ function createGene(sourceDesc, chunkIndex, chunkSha256) {
       'Agent needs to consult the source document to answer or plan.',
     ],
     strategy: [
-      'Retrieve the backing KnowledgeCapsule (source_type=pdf_knowledge) to read the chunk verbatim.',
-      'Do NOT treat the chunk as a validated procedure. It is reference material only.',
+      'Retrieve the backing reference Capsule (source_type=reference) to read the chunk verbatim.',
+      'Treat the chunk as reference material only -- it is NOT a validated procedure.',
     ],
     constraints: {
-      max_files: 0,
+      // Schema requires max_files >= 1. A retrieval pointer edits nothing;
+      // forbidden_paths still guards against accidental writes if a consumer
+      // ever materializes the reference.
+      max_files: 1,
       forbidden_paths: ['.git', 'node_modules'],
     },
-    validation: [],
-    schema_version: SCHEMA_VERSION,
-    _source: {
-      kind: 'pdf2gep',
-      source_type: 'pdf_knowledge',
-      source_ref: sourceDesc.url || sourceDesc.path || null,
-      source_sha256: sourceDesc.sha256 || null,
-      chunk_index: chunkIndex,
-      chunk_sha256: chunkSha256,
-      claims_outside_scope: 'knowledge_extraction',
-      paper_scope_note: 'Gene-as-control-interface was validated by arXiv:2604.15097 on code-science tasks. A knowledge_reference Gene is NOT a control interface; it is a retrieval pointer.',
-    },
+    // Reference-integrity check (see chunkIntegrityCheck): proves the chunk is
+    // intact, the knowledge analog of procedural validation.
+    validation: [chunkIntegrityCheck(chunkSha256)],
+    summary: 'Reference pointer for ' + slug + ' chunk #' + chunkIndex +
+      ' (sha256:' + chunkSha256.slice(0, 12) + ') extracted from ' + sourceRef + '.',
   };
 }
 
 // ---------------------------------------------------------------------------
-// KnowledgeCapsule builder
+// Reference Capsule builder (pure, synchronous, no asset_id)
 //
-// The Capsule's ONLY purpose is to carry the chunk payload for retrieval.
-// We deliberately set outcome.status = "knowledge_reference" (a sentinel
-// that is NOT "success" or "failed") so downstream consumers cannot
-// mistake it for an execution record. blast_radius reflects the chunk's
-// size in characters so validators can reason about it, but it is not
-// evidence that anything was edited or run.
+// Carries the chunk payload for retrieval. Schema-valid: outcome.status is a
+// real value ("success" = "reference extracted"), source_type="reference",
+// content is an object holding the chunk + provenance, execution_trace is
+// empty and blast_radius is zero -- the protocol's own way of saying "no Gene
+// was executed to produce this".
 // ---------------------------------------------------------------------------
-function createKnowledgeCapsule(gene, chunk, chunkIndex, sourceDesc, chunkSha256) {
+function createReferenceCapsule(gene, chunk, chunkIndex, sourceDesc, chunkSha256, schemaVersion) {
   const idKey = shortHash(gene.id + '|' + chunkIndex);
+  const sourceName = sourceDesc.name || sourceDesc.url || sourceDesc.path || 'unknown';
   return {
     type: 'Capsule',
+    schema_version: schemaVersion,
     id: CAPSULE_ID_PREFIX + shortHash(chunkSha256) + '_' + idKey,
     gene: gene.id,
-    trigger: gene.signals_match ? gene.signals_match.slice(0, 3) : ['knowledge_lookup'],
-    summary: 'PDF chunk #' + chunkIndex + ' from ' + (sourceDesc.name || sourceDesc.url || sourceDesc.path || 'unknown'),
-    confidence: null,
-    blast_radius: { files: 0, lines: 0, chunk_chars: chunk.length },
-    outcome: {
-      status: 'knowledge_reference',
-      score: null,
-    },
-    success_reason: null,
+    trigger: gene.signals_match.slice(0, 3),
+    summary: 'PDF chunk #' + chunkIndex + ' from ' + sourceName + ' (reference material).',
+    // The extraction is deterministic; we are fully confident the chunk is the
+    // chunk. This is NOT a claim that a task succeeded.
+    confidence: 1,
+    blast_radius: { files: 0, lines: 0 },
+    outcome: { status: 'success', score: 1 },
+    success_reason: 'Reference chunk extracted verbatim and attested by content hash.',
     env_fingerprint: {
       platform: process.platform,
       node: process.version,
     },
-    source_type: 'pdf_knowledge',
-    strategy: gene.strategy ? gene.strategy.slice() : [],
-    content: chunk,
-    execution_trace: [],
-    schema_version: SCHEMA_VERSION,
-    _source: {
+    source_type: 'reference',
+    strategy: gene.strategy.slice(),
+    content: {
+      text: chunk,
+      mime: 'text/plain',
       source_ref: sourceDesc.url || sourceDesc.path || null,
       source_sha256: sourceDesc.sha256 || null,
       chunk_index: chunkIndex,
       chunk_sha256: chunkSha256,
       claims_outside_scope: 'knowledge_extraction',
     },
+    execution_trace: [],
   };
 }
 
+// Backward-compatible alias for the pre-1.3.0 builder name.
+const createKnowledgeCapsule = createReferenceCapsule;
+
 async function processChunk(chunk, index, sourceDesc) {
+  const { SCHEMA_VERSION, computeAssetId } = await loadSdk();
   const chunkSha256 = sha256Hex(Buffer.from(chunk, 'utf8'));
-  const gene = createGene(sourceDesc, index, chunkSha256);
-  const capsule = createKnowledgeCapsule(gene, chunk, index, sourceDesc, chunkSha256);
+  const gene = createGene(sourceDesc, index, chunkSha256, SCHEMA_VERSION);
+  gene.asset_id = computeAssetId(gene);
+  const capsule = createReferenceCapsule(gene, chunk, index, sourceDesc, chunkSha256, SCHEMA_VERSION);
+  capsule.asset_id = computeAssetId(capsule);
   return { gene, capsule };
 }
 
@@ -197,6 +238,8 @@ async function main() {
   console.log('Processing PDF: ' + pdfSource + '...');
 
   try {
+    if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
     const pdfBuffer = await fetchPdfBuffer(pdfSource);
     const pdfSha256 = sha256Hex(pdfBuffer);
     const sourceDesc = {
@@ -221,12 +264,12 @@ async function main() {
     const batchFile = path.join(OUTPUT_DIR, 'batch_' + Date.now() + '.json');
     fs.writeFileSync(batchFile, JSON.stringify(assets, null, 2));
 
-    console.log('Generated ' + assets.length + ' GEP pairs (Gene + KnowledgeCapsule).');
+    console.log('Generated ' + assets.length + ' GEP pairs (explore Gene + reference Capsule).');
     console.log('Saved to ' + batchFile);
     console.log('');
-    console.log('NOTE: These are pdf_knowledge assets, NOT execution Capsules.');
-    console.log('      They are valid for retrieval/citation, not as proof that a');
-    console.log('      Gene has been validated on a real task. See README.');
+    console.log('NOTE: These are source_type="reference" capsules, NOT execution Capsules.');
+    console.log('      They are valid for retrieval/citation, not as proof that a Gene has');
+    console.log('      been validated on a real task (execution_trace is empty by design).');
   } catch (err) {
     console.error('Error:', err && err.message ? err.message : err);
     process.exitCode = 1;
@@ -241,10 +284,12 @@ module.exports = {
   extractText,
   chunkText,
   createGene,
+  createReferenceCapsule,
   createKnowledgeCapsule,
   processChunk,
+  chunkIntegrityCheck,
   sha256Hex,
-  SCHEMA_VERSION,
+  loadSdk,
   GENE_ID_PREFIX,
   CAPSULE_ID_PREFIX,
 };
