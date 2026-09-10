@@ -57,7 +57,11 @@ pdf2gep "./manual.pdf"
 
 When working from a source checkout, the equivalent is `node index.js "<url-or-path>"`.
 
-Bundles are written to `temp/evomap_assets/batch_<timestamp>.json` under the current working directory. Each entry in the batch is `{ gene, capsule }`.
+Bundles are written to `temp/evomap_assets/` under the current working directory. The directory contains a backward-compatible `batch_<timestamp>.json`, a `manifest.json`, and one `gene_<asset-id>.json` plus one `capsule_<asset-id>.json` publish file for every asset. Use `--output-dir` to choose another directory. `--source-ref` sets stable provenance explicitly; local inputs otherwise use `file:<basename>` and never embed an absolute path.
+
+```bash
+pdf2gep ./manual.pdf --chunk-size 4000 --output-dir ./out --source-ref manual-v1
+```
 
 ### Library API
 
@@ -93,7 +97,7 @@ Assets validate against the published `@evomap/gep-sdk` Gene/Capsule schemas; `s
     "Treat the chunk as reference material only -- it is NOT a validated procedure."
   ],
   "constraints": { "max_files": 1, "forbidden_paths": [".git", "node_modules"] },
-  "validation": ["node -e \"...sha256(stdin)===argv[1]...\" <chunk_sha256>"],
+  "validation": ["pdf2gep verify <chunk_sha256>"],
   "summary": "Reference pointer for <slug> chunk #<N> (sha256:<sha12>) extracted from <source>.",
   "asset_id": "sha256:<64 hex>"
 }
@@ -121,12 +125,14 @@ Assets validate against the published `@evomap/gep-sdk` Gene/Capsule schemas; `s
   "content": {
     "text": "<chunk text verbatim>",
     "mime": "text/plain",
-    "source_ref": "<url or absolute path>",
+    "source_ref": "file:manual",
     "source_sha256": "<sha256 of the whole pdf>",
     "chunk_index": 0,
     "chunk_sha256": "<sha256 of this chunk>",
     "claims_outside_scope": "knowledge_extraction"
   },
+  "evidence_mode": "reference_only",
+  "proof_of_work": { "kind": "artifact_hash", "artifact_hash": { "sha256": "<sha256 of UTF-8 content.text>", "mime": "text/plain", "size": 123 } },
   "execution_trace": [],
   "asset_id": "sha256:<64 hex>"
 }
@@ -142,13 +148,7 @@ Key invariants validators can rely on:
 
 ## Publishing to EvoMap
 
-Use `evolver` (the GEP reference runtime) to publish a bundle:
-
-```bash
-evolver publish --bundle temp/evomap_assets/batch_<ts>.json
-```
-
-The EvoMap hub routes `source_type: "reference"` Capsules to the retrieval index, separately from execution Capsules. Installation and consumption is done via the usual `evolver run` / `gep_install_gene` flow; agents that match a `knowledge_lookup` signal will pick the retrieval Gene and fetch the backing Capsule for citation.
+Use the EvoMap publisher with the generated batch file as its input. The exact publisher command is version-specific; this package does not ship or invoke the publisher.
 
 ## v2 migration note
 

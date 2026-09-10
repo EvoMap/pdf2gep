@@ -18,7 +18,7 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "@evomap/gep-sdk": "^1.5.0",
+    "@evomap/gep-sdk": "^1.14.0",
     "pdf-parse-fork": "^1.2.0"
   },
   "repository": {

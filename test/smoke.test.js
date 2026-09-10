@@ -15,6 +15,9 @@ const {
   loadSdk,
   GENE_ID_PREFIX,
   CAPSULE_ID_PREFIX,
+  sha256Hex,
+  stableSourceRef,
+  validateAsset,
 } = require('../index');
 
 const pkg = require('../package.json');
@@ -101,13 +104,13 @@ test('chunkIntegrityCheck is a runnable command that verifies a piped chunk', ()
   const { execFileSync } = require('node:child_process');
   const sha = require('node:crypto').createHash('sha256').update('payload').digest('hex');
   const cmd = chunkIntegrityCheck(sha);
-  assert.match(cmd, /^node -e /);
-  // Run it for real: piping the matching content must exit 0.
-  const out = execFileSync('bash', ['-c', cmd], { input: 'payload' });
+  assert.equal(cmd, `pdf2gep verify ${sha}`);
+  // Run the packaged verifier for real: piping matching content must exit 0.
+  const out = execFileSync(process.execPath, ['index.js', 'verify', sha], { input: 'payload' });
   // (execFileSync throws on non-zero exit; reaching here means exit 0.)
   assert.ok(out !== undefined);
   // A mismatching payload must exit non-zero.
-  assert.throws(() => execFileSync('bash', ['-c', cmd], { input: 'tampered' }));
+  assert.throws(() => execFileSync(process.execPath, ['index.js', 'verify', sha], { input: 'tampered' }));
 });
 
 test('processChunk returns a conformant gene+capsule pair with valid asset_ids', async () => {
@@ -147,4 +150,19 @@ test('CLI entry has a node shebang so global install can launch it', () => {
   const binPath = path.resolve(__dirname, '..', pkg.bin.pdf2gep);
   const firstLine = fs.readFileSync(binPath, 'utf8').split('\n', 1)[0];
   assert.equal(firstLine, '#!/usr/bin/env node');
+});
+
+test('reference-only evidence hashes UTF-8 content and keeps local source refs stable', async () => {
+  const { gene, capsule } = await processChunk('hé😀', 0, { name: 'manual', path: '/private/secret/manual.pdf', sha256: 'c'.repeat(64) });
+  assert.equal(capsule.evidence_mode, 'reference_only');
+  assert.equal(capsule.proof_of_work.artifact_hash.sha256, sha256Hex(Buffer.from('hé😀', 'utf8')));
+  assert.equal(capsule.proof_of_work.artifact_hash.size, Buffer.byteLength('hé😀', 'utf8'));
+  assert.equal(capsule.content.source_ref, 'file:manual');
+  assert.doesNotThrow(() => { validateAsset(gene, 'gene'); validateAsset(capsule, 'capsule'); });
+  assert.equal(stableSourceRef({ name: 'manual', path: '/private/secret/manual.pdf' }), 'file:manual');
+  assert.equal(stableSourceRef({ name: 'manual', sourceRef: '/private/secret/manual.pdf' }), 'file:manual.pdf');
+});
+
+test('chunkText does not split surrogate pairs', () => {
+  assert.deepEqual(chunkText('A😀B', 2), ['A😀', 'B']);
 });

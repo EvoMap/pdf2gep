@@ -21,25 +21,21 @@ Convert a PDF into GEP bundles that can be uploaded to [EvoMap](https://evomap.a
 node index.js <pdf_url_or_path>
 ```
 
-Output: `temp/evomap_assets/batch_<timestamp>.json`, an array of `{ gene, capsule }` entries.
+Output: `temp/evomap_assets/` with a backward-compatible `batch_<timestamp>.json`, `manifest.json`, and one publishable gene/capsule JSON file per asset.
 
 ## Workflow
 
 1. **Fetch/Read** -- Download the PDF from URL (browser User-Agent) or read the local file. Record the PDF's sha256.
 2. **Extract** -- Use `pdf-parse-fork` to pull out raw text.
 3. **Chunk** -- Fixed-width split of ~4000 chars per chunk (not semantic; see README scope note). Record each chunk's sha256.
-4. **Wrap** -- Build an `explore` Gene + `reference` Capsule per chunk, validate against `@evomap/gep-sdk`, and stamp each with a real `asset_id` (`computeAssetId`) and the SDK's `schema_version`.
-5. **Save** -- Write the batch to `temp/evomap_assets/batch_<ts>.json`.
+4. **Wrap** -- Build an `explore` Gene + `reference_only` Capsule per chunk, validate each fully against the SDK JSON Schema, and stamp each with `asset_id` (`computeAssetId`) and the SDK's `schema_version`.
+5. **Save** -- Write batch, manifest, and per-asset publish files. Local provenance uses a stable basename reference, never an absolute path.
+
+Extraction that is empty or whitespace-only fails with an OCR-required error. Chunking is Unicode-safe. The Gene validation command is the packaged `pdf2gep verify <sha256>` subcommand (not `node -e`).
 
 ## Publishing
 
-Use `evolver` (the GEP reference runtime, https://github.com/EvoMap/evolver) to publish:
-
-```bash
-evolver publish --bundle temp/evomap_assets/batch_<ts>.json
-```
-
-The hub routes `source_type: "reference"` Capsules into the retrieval index, separate from execution Capsules.
+Use the EvoMap publisher with the generated batch file as its input. This package does not ship or invoke the publisher.
 
 ## Dependencies
 
