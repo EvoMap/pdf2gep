@@ -15,13 +15,15 @@ Both assets are **fully schema-valid GEP** (validated against [`@evomap/gep-sdk`
 
 - A standard GEP **Capsule** is an auditable record of one *real execution* of a Gene (`execution_trace` with exit codes, non-zero `blast_radius`, etc.). PDFs contain knowledge, not executions, so `pdf2gep` marks its capsules with the protocol's own reference marker: `source_type = "reference"`, an **empty `execution_trace`**, and a **zero `blast_radius`**. `outcome.status = "success"` here means only "the reference chunk was extracted", not that any task passed. Treating these as proof-of-validation is a misuse.
 - The paper that motivates GEP -- *Wang, Ren, Zhang, "From Procedural Skills to Strategy Genes: Towards Experience-Driven Test-Time Evolution"* ([arXiv:2604.15097](https://arxiv.org/abs/2604.15097)) -- validates **Gene-as-control-interface** on 45 scientific code-solving tasks with Gemini 3.1 Pro and Flash Lite. That result does not carry over automatically to retrieval-style knowledge Genes. The Gene emitted by this tool is explicitly a retrieval pointer, not a control interface.
-- Chunk quality is naive: fixed-width ~4000-char slices. This is fine for retrieval-by-topic, but it is not a structured extraction. Do not expect the output to replace a proper RAG ingestion pipeline.
+- Chunk quality is naive: fixed-width ~4000-code-point slices, without splitting surrogate pairs. Whitespace-only slices are skipped as layout separators; retained slices are unchanged. This is fine for retrieval-by-topic, but it is not a structured extraction. Do not expect the output to replace a proper RAG ingestion pipeline.
 
 Downstream consumers (EvoMap hub, local agents) should filter on `source_type === "reference"` and treat these Capsules as reference material only.
 
 ## Install
 
-### Recommended: from npm
+> **v2 release contract:** `@evomap/pdf2gep@2.0.0` pins the published `@evomap/gep-sdk@1.14.0` contract from [SDK PR #21](https://github.com/EvoMap/gep-sdk-js/pull/21). Clean registry-backed dependency installation, Node 18/22 regression tests, and installed CLI verification have passed. pdf2gep 1.x does not include this reference-only contract or the isolated output layout; read the migration notes before upgrading. Hub/Evolver acceptance still requires their coordinated reference-only support; generating files does not publish them.
+
+### From npm
 
 ```bash
 npm install -g @evomap/pdf2gep
@@ -57,7 +59,15 @@ pdf2gep "./manual.pdf"
 
 When working from a source checkout, the equivalent is `node index.js "<url-or-path>"`.
 
-Bundles are written to `temp/evomap_assets/batch_<timestamp>.json` under the current working directory. Each entry in the batch is `{ gene, capsule }`.
+Each conversion is staged and atomically published as an isolated `run_<timestamp>_<id>/` directory under `temp/evomap_assets/` (or the directory passed to `--output-dir`). A completed run contains `batch.json`, `manifest.json`, and one `gene_<asset-id>.json` plus one `capsule_<asset-id>.json` file per pair. Runs do not share mutable files. This intentionally replaces the earlier flat output layout; consumers that globbed the output root must discover `run_*/batch.json` instead. The CLI prints the completed batch and manifest paths.
+
+- **Failure and retry:** handled write/rename failures remove the private staging directory and preserve earlier runs. If cleanup itself fails, both errors are reported. `SIGKILL` or a host crash can leave a hidden `.run_*.tmp` directory; consumers must ignore it. A retry creates a separate run and never deletes another run's staging. Remove an orphan only after confirming that its writer is no longer running. Atomic rename guarantees visibility of complete runs, not power-loss durability (`fsync` is not performed).
+- **Provenance:** local paths and `file:` URIs become basename-only references. HTTP(S) references omit credentials, query parameters, and fragments. If a query identifies a distinct document, set a non-secret opaque `--source-ref`, such as `manual-v1`. This sanitizes provenance metadata, not the document's text; review content before publishing.
+- **Options:** `--chunk-size` must be a positive integer. Missing option values and unknown options fail before reading the PDF.
+
+```bash
+pdf2gep ./manual.pdf --chunk-size 4000 --output-dir ./out --source-ref manual-v1
+```
 
 ### Library API
 
@@ -76,7 +86,7 @@ const {
 
 ## Output schema
 
-Assets validate against the published `@evomap/gep-sdk` Gene/Capsule schemas; `schema_version` is taken from the SDK at runtime (so it tracks the installed protocol version rather than being hard-coded).
+Assets validate against the pinned `@evomap/gep-sdk@1.14.0` Gene/Capsule schemas; `schema_version` comes from the SDK at runtime. Schemas are loaded once. The local validator implements the keywords used by this pinned contract and rejects unknown keywords rather than silently ignoring future constraints; it is not a general-purpose JSON Schema engine. `processChunk` additionally invokes the SDK reference-only classifier to verify UTF-8 hash/byte-size evidence.
 
 ### Gene (`category: "explore"`)
 
@@ -93,13 +103,13 @@ Assets validate against the published `@evomap/gep-sdk` Gene/Capsule schemas; `s
     "Treat the chunk as reference material only -- it is NOT a validated procedure."
   ],
   "constraints": { "max_files": 1, "forbidden_paths": [".git", "node_modules"] },
-  "validation": ["node -e \"...sha256(stdin)===argv[1]...\" <chunk_sha256>"],
+  "validation": ["node -e \"<self-contained SHA-256 verifier>\" <chunk_sha256>"],
   "summary": "Reference pointer for <slug> chunk #<N> (sha256:<sha12>) extracted from <source>.",
   "asset_id": "sha256:<64 hex>"
 }
 ```
 
-`validation` is a genuinely runnable reference-integrity check (pipe the chunk in, confirm its sha256 matches) — the knowledge analog of a procedural Gene's validation. It proves the reference is intact, not that a task ran.
+`validation` is a self-contained Node.js reference-integrity check (pipe the chunk in, confirm its sha256 matches); it does not require `pdf2gep` to be installed on the consuming machine. The helper validates the interpolated digest before generating the command, so caller-controlled shell text cannot enter it. This proves the reference is intact, not that a task ran.
 
 ### Reference Capsule (`source_type: "reference"`)
 
@@ -121,12 +131,14 @@ Assets validate against the published `@evomap/gep-sdk` Gene/Capsule schemas; `s
   "content": {
     "text": "<chunk text verbatim>",
     "mime": "text/plain",
-    "source_ref": "<url or absolute path>",
+    "source_ref": "file:manual.pdf",
     "source_sha256": "<sha256 of the whole pdf>",
     "chunk_index": 0,
     "chunk_sha256": "<sha256 of this chunk>",
     "claims_outside_scope": "knowledge_extraction"
   },
+  "evidence_mode": "reference_only",
+  "proof_of_work": { "kind": "artifact_hash", "artifact_hash": { "sha256": "<sha256 of UTF-8 content.text>", "mime": "text/plain", "size": 123 } },
   "execution_trace": [],
   "asset_id": "sha256:<64 hex>"
 }
@@ -142,13 +154,7 @@ Key invariants validators can rely on:
 
 ## Publishing to EvoMap
 
-Use `evolver` (the GEP reference runtime) to publish a bundle:
-
-```bash
-evolver publish --bundle temp/evomap_assets/batch_<ts>.json
-```
-
-The EvoMap hub routes `source_type: "reference"` Capsules to the retrieval index, separately from execution Capsules. Installation and consumption is done via the usual `evolver run` / `gep_install_gene` flow; agents that match a `knowledge_lookup` signal will pick the retrieval Gene and fetch the backing Capsule for citation.
+Use the EvoMap publisher with the generated batch file as its input. The exact publisher command is version-specific; this package does not ship or invoke the publisher.
 
 ## v2 migration note
 
@@ -164,6 +170,7 @@ The EvoMap hub routes `source_type: "reference"` Capsules to the retrieval index
 | `capsule.source_type: "pdf_knowledge"` | `capsule.source_type: "reference"` |
 | `capsule.blast_radius.chunk_chars` | dropped (use `content.text.length`) |
 | no `asset_id` | real `asset_id` via `@evomap/gep-sdk` |
+| flat `batch_<timestamp>.json` plus shared `manifest.json` | isolated `run_<timestamp>_<id>/batch.json` plus per-run manifest |
 
 Filter on `source_type === "reference"` instead of `"pdf_knowledge"`.
 

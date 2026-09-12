@@ -11,6 +11,8 @@ Convert a PDF into GEP bundles that can be uploaded to [EvoMap](https://evomap.a
 
 `pdf2gep` is a protocol adapter for *reference* knowledge, not *procedural* knowledge.
 
+pdf2gep 2.0.0 depends on the published SDK 1.14.0 contract ([SDK PR #21](https://github.com/EvoMap/gep-sdk-js/pull/21)). Clean registry-backed dependency installation and Node 18/22 CLI verification pass without a development SDK link. Version 1.x does not include this reference-only contract or the isolated output layout. Do not claim that generated files have been accepted by Hub/Evolver. See the README migration notes before upgrading or publishing assets.
+
 - The emitted Capsule has `source_type = "reference"`, an empty `execution_trace`, and a zero `blast_radius`. `outcome.status = "success"` means only "the chunk was extracted" — it is NOT evidence that the associated Gene has been validated in practice.
 - For procedural knowledge (a `SKILL.md` describing a workflow plus real executions), use [`skill2gep`](https://github.com/EvoMap/skill2gep) instead.
 - The GEP paper (Wang, Ren, Zhang, arXiv:2604.15097) validates Gene-as-control-interface on 45 code-science tasks. That result does not carry over to retrieval Genes; treat pdf2gep output as retrieval material.
@@ -21,25 +23,21 @@ Convert a PDF into GEP bundles that can be uploaded to [EvoMap](https://evomap.a
 node index.js <pdf_url_or_path>
 ```
 
-Output: `temp/evomap_assets/batch_<timestamp>.json`, an array of `{ gene, capsule }` entries.
+Output: an atomically published `run_<timestamp>_<id>/` directory under `temp/evomap_assets/`, containing `batch.json`, `manifest.json`, and one gene/capsule JSON file per pair. Handled write failures attempt to remove staging without touching earlier completed runs; cleanup failures are reported. Concurrent runs do not overwrite one another. Consumers must ignore hidden `.run_*.tmp` directories left by forced termination, and must migrate root-level batch globs to `run_*/batch.json`. No power-loss durability is promised.
 
 ## Workflow
 
 1. **Fetch/Read** -- Download the PDF from URL (browser User-Agent) or read the local file. Record the PDF's sha256.
 2. **Extract** -- Use `pdf-parse-fork` to pull out raw text.
-3. **Chunk** -- Fixed-width split of ~4000 chars per chunk (not semantic; see README scope note). Record each chunk's sha256.
-4. **Wrap** -- Build an `explore` Gene + `reference` Capsule per chunk, validate against `@evomap/gep-sdk`, and stamp each with a real `asset_id` (`computeAssetId`) and the SDK's `schema_version`.
-5. **Save** -- Write the batch to `temp/evomap_assets/batch_<ts>.json`.
+3. **Chunk** -- Fixed-width split of ~4000 Unicode code points per chunk (not semantic; see README scope note). Skip whitespace-only layout separators and record each retained chunk's sha256.
+4. **Wrap** -- Build an `explore` Gene + `reference_only` Capsule per chunk, validate against the pinned SDK JSON Schema and reference-only classifier, and stamp each with `asset_id` (`computeAssetId`) and the SDK's `schema_version`.
+5. **Save** -- Stage batch, manifest, and per-asset files in a private run directory, then atomically rename it into place. Local provenance uses a stable basename reference; HTTP(S) provenance omits credentials, query parameters, and fragments. Document text is not redacted.
+
+Extraction that is empty or whitespace-only fails with an OCR-required error. Chunking is Unicode-safe. The Gene validation command is a self-contained Node.js SHA-256 verifier, so consuming machines do not need a global `pdf2gep` executable.
 
 ## Publishing
 
-Use `evolver` (the GEP reference runtime, https://github.com/EvoMap/evolver) to publish:
-
-```bash
-evolver publish --bundle temp/evomap_assets/batch_<ts>.json
-```
-
-The hub routes `source_type: "reference"` Capsules into the retrieval index, separate from execution Capsules.
+Use the EvoMap publisher with the generated batch file as its input. This package does not ship or invoke the publisher.
 
 ## Dependencies
 
